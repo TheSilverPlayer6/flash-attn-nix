@@ -47,14 +47,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # torch-bin's autoPatchelf step and nvcc are memory-hungry; hosted runners
-      # have 7 GiB RAM, so give them swap headroom.
-      - name: Add swap
+      # torch-bin's autoPatchelf step and nvcc are memory-hungry; hosted
+      # runners have 7 GiB RAM, so make sure there is swap headroom (runners
+      # usually ship an active /swapfile already).
+      - name: Ensure swap headroom
         run: |
-          sudo fallocate -l 10G /swapfile || sudo dd if=/dev/zero of=/swapfile bs=1M count=10240
-          sudo chmod 600 /swapfile
-          sudo mkswap /swapfile
-          sudo swapon /swapfile
+          free -h; swapon --show || true
+          SWAP_KB=$(awk '/SwapTotal/ {print $2}' /proc/meminfo)
+          if [ "${SWAP_KB:-0}" -lt 4000000 ]; then
+            sudo dd if=/dev/zero of=/swapfile-nix bs=1M count=8192
+            sudo chmod 600 /swapfile-nix
+            sudo mkswap /swapfile-nix
+            sudo swapon /swapfile-nix || true
+          fi
           free -h
 
       - uses: cachix/install-nix-action@v31
