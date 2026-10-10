@@ -200,6 +200,7 @@ assert lib.assertMsg (torch.cudaSupport or false) ''
     inherit
       cudaPackages
       cutlass
+      torch
       ;
   };
 

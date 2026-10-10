@@ -47,34 +47,32 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # GitHub-hosted runners ship with only ~14 GiB free disk; the CUDA
-      # closure (nvcc, cuDNN, cuBLAS, torch-bin, kernel objects) peaks around
-      # 35-40 GiB. Purge preinstalled toolchains we don't need.
-      - name: Maximize build space
-        uses: easimon/maximize-build-space@v10
-        with:
-          remove-dotnet: "true"
-          remove-android: "true"
-          remove-haskell: "true"
-          remove-codeql: "true"
-          remove-docker-images: "true"
-          overprovision-lull: "5"
-
-      - name: Runner diagnostics
+      # Hosted runners only have ~14 GiB free out of the box; the CUDA closure
+      # (nvcc, cuDNN, cuBLAS, torch-bin, kernel objects) peaks around 35-40 GiB.
+      - name: Free disk space
         run: |
           set -x
-          nproc; free -h; df -h; lsblk 2>/dev/null || true
-          df -h / /mnt /home /tmp /nix 2>/dev/null || true
+          df -h /
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /opt/ghc /usr/local/.ghcup
+          sudo rm -rf /usr/share/swift
+          sudo rm -rf /usr/local/share/boost
+          sudo rm -rf /opt/hostedtoolcache/CodeQL
+          sudo docker image prune -af 2>/dev/null || true
+          sudo docker builder prune -af 2>/dev/null || true
+          sudo apt-get clean || true
+          df -h / | tee disk-after-cleanup.txt
+          free -h | tee -a disk-after-cleanup.txt
 
-      # torch-bin's autoPatchelf step and nvcc are memory-hungry; hosted
-      # runners have 7 GiB RAM, so make sure there is swap headroom (runners
-      # usually ship an active /swapfile already).
       - name: Ensure swap headroom
         run: |
+          set -x
           free -h; swapon --show || true
+          AVAIL_KB=$(df --output=avail -k / | tail -1)
           SWAP_KB=$(awk '/SwapTotal/ {print $2}' /proc/meminfo)
-          if [ "${SWAP_KB:-0}" -lt 4000000 ]; then
-            sudo dd if=/dev/zero of=/swapfile-nix bs=1M count=8192
+          if [ "${SWAP_KB:-0}" -lt 4000000 ] && [ "${AVAIL_KB:-0}" -gt 30000000 ]; then
+            sudo dd if=/dev/zero of=/swapfile-nix bs=1M count=6144
             sudo chmod 600 /swapfile-nix
             sudo mkswap /swapfile-nix
             sudo swapon /swapfile-nix || true
@@ -87,28 +85,33 @@ jobs:
             experimental-features = nix-command flakes
             auto-optimise-store = true
 
-      - name: Build flash-attn (this compiles CUDA kernels; expect hours)
+      - name: Prepare nix expressions
         run: |
-          set -o pipefail
+          set -x
           ARCH_LIST=$(python3 -c 'import os; v=os.environ["CUDA_ARCHS"]; print("null" if not v.strip() else "[ " + " ".join("\"%s\"" % a for a in v.split(";") if a) + " ]")')
           ARCH_TAG=$(echo "${CUDA_ARCHS:-default}" | tr ';,' '--')
-          echo "ARCH_TAG=$ARCH_TAG" >> "$GITHUB_ENV"
-          echo "cudaArchs = $ARCH_LIST, maxJobs = $MAX_JOBS_REQ, nvccThreads = $NVCC_THREADS_REQ"
-          nix build -L --print-build-logs --show-trace --impure \
-            --expr "
-              let
-                flake = builtins.getFlake (toString ./.);
-                pkgs = import flake.inputs.nixpkgs {
-                  system = \"x86_64-linux\";
-                  config.allowUnfree = true;
-                  overlays = [ flake.overlays.default ];
-                };
-              in pkgs.mkFlashAttn {
-                cudaArchs = $ARCH_LIST;
-                maxJobs = $MAX_JOBS_REQ;
-                nvccThreads = $NVCC_THREADS_REQ;
-              }
-            " 2>&1 | tee build-full.log
+          PKGS_PRELUDE='let flake = builtins.getFlake (toString ./.); pkgs = import flake.inputs.nixpkgs { system = "x86_64-linux"; config.allowUnfree = true; overlays = [ flake.overlays.default ]; }; in'
+          {
+            echo "ARCH_TAG=$ARCH_TAG"
+            echo "TORCH_EXPR=$PKGS_PRELUDE pkgs.python3Packages.flash-attn.torch"
+            echo "FA_EXPR=$PKGS_PRELUDE pkgs.mkFlashAttn { cudaArchs = $ARCH_LIST; maxJobs = $MAX_JOBS_REQ; nvccThreads = $NVCC_THREADS_REQ; }"
+          } >> "$GITHUB_ENV"
+          echo "cudaArchs = $ARCH_LIST | maxJobs = $MAX_JOBS_REQ | nvccThreads = $NVCC_THREADS_REQ"
+
+      # Build torch-bin (+ its CUDA redistributable closure) first: the biggest
+      # download/patchelf phase, isolated so failures are attributable.
+      - name: Build torch-bin (cu130 wheel + CUDA 13 redistributables)
+        run: |
+          set -o pipefail
+          nix build -L --print-build-logs --impure --expr "$TORCH_EXPR" -o result-torch 2>&1 | tee torch-bin-build.log
+          df -h /
+          nix path-info -sh ./result-torch | tee -a disk-after-cleanup.txt
+
+      - name: Build flash-attn (compiles CUDA kernels; expect hours)
+        run: |
+          set -o pipefail
+          nix build -L --print-build-logs --show-trace --impure --expr "$FA_EXPR" -o result 2>&1 | tee build-full.log
+          df -h /
           tail -c 20000000 build-full.log > build.log
           echo "### Build finished" >> "$GITHUB_STEP_SUMMARY"
 
