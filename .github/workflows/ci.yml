@@ -47,6 +47,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # GitHub-hosted runners ship with only ~14 GiB free disk; the CUDA
+      # closure (nvcc, cuDNN, cuBLAS, torch-bin, kernel objects) peaks around
+      # 35-40 GiB. Purge preinstalled toolchains we don't need.
+      - name: Maximize build space
+        uses: easimon/maximize-build-space@v10
+        with:
+          remove-dotnet: "true"
+          remove-android: "true"
+          remove-haskell: "true"
+          remove-codeql: "true"
+          remove-docker-images: "true"
+          overprovision-lull: "5"
+
       - name: Runner diagnostics
         run: |
           set -x
