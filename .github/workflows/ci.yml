@@ -47,6 +47,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Runner diagnostics
+        run: |
+          set -x
+          nproc; free -h; df -h; lsblk 2>/dev/null || true
+          df -h / /mnt /home /tmp /nix 2>/dev/null || true
+
       # torch-bin's autoPatchelf step and nvcc are memory-hungry; hosted
       # runners have 7 GiB RAM, so make sure there is swap headroom (runners
       # usually ship an active /swapfile already).
@@ -66,6 +72,7 @@ jobs:
         with:
           extra_nix_config: |
             experimental-features = nix-command flakes
+            auto-optimise-store = true
 
       - name: Build flash-attn (this compiles CUDA kernels; expect hours)
         run: |
