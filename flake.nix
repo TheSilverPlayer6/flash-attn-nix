@@ -72,8 +72,12 @@
         ];
       };
 
+      # Forcing `.drvPath` here makes `nix flake check` instantiate the whole
+      # derivation graph (every input, hash and argument of the package is
+      # fully evaluated). The string context is discarded so that the .drv
+      # path does not become a store reference of this check derivation.
       checks.${system}.evaluate = pkgs.runCommand "flash-attn-eval-check" { } ''
-        echo ${pkgs.flash-attn.drvPath} > $out
+        echo ${builtins.unsafeDiscardStringContext pkgs.flash-attn.drvPath} > $out
       '';
     };
 }
