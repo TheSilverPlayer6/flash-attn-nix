@@ -137,8 +137,12 @@ assert lib.assertMsg (torch.cudaSupport or false) ''
   ];
 
   postPatch = ''
-    # GitHub tarballs do not contain git submodules; link in the pinned
-    # cutlass checkout so that csrc/cutlass/include/cutlass/cutlass.h exists.
+    # GitHub tarballs contain git-submodule mount points as *empty directories*
+    # (csrc/cutlass, csrc/composable_kernel). Replace csrc/cutlass with the
+    # pinned cutlass checkout; setup.py asserts
+    # csrc/cutlass/include/cutlass/cutlass.h. composable_kernel is ROCm-only
+    # and stays empty.
+    rmdir csrc/cutlass
     ln -s ${cutlass} csrc/cutlass
   '';
 
