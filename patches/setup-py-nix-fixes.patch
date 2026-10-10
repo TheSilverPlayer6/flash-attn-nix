@@ -1,0 +1,29 @@
+--- a/setup.py
++++ b/setup.py
+@@ -17,7 +17,11 @@
+ 
+ import urllib.request
+ import urllib.error
+-from wheel.bdist_wheel import bdist_wheel as _bdist_wheel
++try:
++    from wheel.bdist_wheel import bdist_wheel as _bdist_wheel
++except ImportError:
++    # wheel >= 0.46 removed bdist_wheel; setuptools >= 70.1 vendors it.
++    from setuptools.command.bdist_wheel import bdist_wheel as _bdist_wheel
+ 
+ import torch
+ from torch.utils.cpp_extension import (
+@@ -565,9 +569,8 @@
+         "torch",
+         "einops",
+     ],
+-    setup_requires=[
+-        "packaging",
+-        "psutil",
+-        "ninja",
+-    ],
++    # Nix: the build environment provides these through nativeBuildInputs;
++    # setup_requires would try to fetch them from PyPI (network is disabled
++    # inside the Nix build sandbox).
++    setup_requires=[],
+ )
