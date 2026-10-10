@@ -74,7 +74,7 @@ jobs:
           ARCH_TAG=$(echo "${CUDA_ARCHS:-default}" | tr ';,' '--')
           echo "ARCH_TAG=$ARCH_TAG" >> "$GITHUB_ENV"
           echo "cudaArchs = $ARCH_LIST, maxJobs = $MAX_JOBS_REQ, nvccThreads = $NVCC_THREADS_REQ"
-          nix build -L --print-build-logs --show-trace \
+          nix build -L --print-build-logs --show-trace --impure \
             --expr "
               let
                 flake = builtins.getFlake (toString ./.);
@@ -106,7 +106,7 @@ jobs:
 
       - name: Import test (no GPU needed)
         run: |
-          nix build --no-link \
+          nix build --no-link --impure \
             --expr "
               let
                 flake = builtins.getFlake (toString ./.);
