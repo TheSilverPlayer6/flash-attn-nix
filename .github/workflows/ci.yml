@@ -3,6 +3,20 @@ name: CI
 on:
   push:
   pull_request:
+  workflow_dispatch:
+    inputs:
+      cuda_archs:
+        description: "FLASH_ATTN_CUDA_ARCHS to build (semicolon-separated; empty = upstream default 80;90;100;120)"
+        required: false
+        default: "80"
+      max_jobs:
+        description: "MAX_JOBS (parallel nvcc invocations)"
+        required: false
+        default: "2"
+      nvcc_threads:
+        description: "NVCC_THREADS (internal nvcc parallelism per job)"
+        required: false
+        default: "1"
 
 jobs:
   eval:
@@ -21,7 +35,97 @@ jobs:
       - name: Resolve full build graph
         run: nix build .#flash-attn --dry-run
 
-  # NOTE: actually compiling flash-attn's CUDA kernels needs a big builder
-  # (>= 32 GiB RAM recommended) and hours of CPU time, which GitHub-hosted
-  # runners cannot provide. The package was verified by building it end to
-  # end and running tests/smoke-test.py on an H100 machine; see README.
+  build:
+    name: Build & test (CUDA, archs=${{ inputs.cuda_archs || '80' }})
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    env:
+      CUDA_ARCHS: ${{ inputs.cuda_archs }}
+      MAX_JOBS_REQ: ${{ inputs.max_jobs }}
+      NVCC_THREADS_REQ: ${{ inputs.nvcc_threads }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # torch-bin's autoPatchelf step and nvcc are memory-hungry; hosted runners
+      # have 7 GiB RAM, so give them swap headroom.
+      - name: Add swap
+        run: |
+          sudo fallocate -l 10G /swapfile || sudo dd if=/dev/zero of=/swapfile bs=1M count=10240
+          sudo chmod 600 /swapfile
+          sudo mkswap /swapfile
+          sudo swapon /swapfile
+          free -h
+
+      - uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      - name: Build flash-attn (this compiles CUDA kernels; expect hours)
+        run: |
+          set -o pipefail
+          ARCH_LIST=$(python3 -c 'import os; v=os.environ["CUDA_ARCHS"]; print("null" if not v.strip() else "[ " + " ".join("\"%s\"" % a for a in v.split(";") if a) + " ]")')
+          ARCH_TAG=$(echo "${CUDA_ARCHS:-default}" | tr ';,' '--')
+          echo "ARCH_TAG=$ARCH_TAG" >> "$GITHUB_ENV"
+          echo "cudaArchs = $ARCH_LIST, maxJobs = $MAX_JOBS_REQ, nvccThreads = $NVCC_THREADS_REQ"
+          nix build -L --print-build-logs --show-trace \
+            --expr "
+              let
+                flake = builtins.getFlake (toString ./.);
+                pkgs = import flake.inputs.nixpkgs {
+                  system = \"x86_64-linux\";
+                  config.allowUnfree = true;
+                  overlays = [ flake.overlays.default ];
+                };
+              in pkgs.mkFlashAttn {
+                cudaArchs = $ARCH_LIST;
+                maxJobs = $MAX_JOBS_REQ;
+                nvccThreads = $NVCC_THREADS_REQ;
+              }
+            " 2>&1 | tee build-full.log
+          tail -c 20000000 build-full.log > build.log
+          echo "### Build finished" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Inspect result
+        run: |
+          nix path-info -shR ./result | tail -3
+          du -sh ./result
+          find -L ./result -name "*.so" | head
+          nix path-info -sh ./result > path-info.txt
+          python3 - <<'EOF' >> "$GITHUB_STEP_SUMMARY"
+          import os
+          print("- store path:", os.path.realpath("result"))
+          print("- cudaArchs:", repr(os.environ["CUDA_ARCHS"]))
+          EOF
+
+      - name: Import test (no GPU needed)
+        run: |
+          nix build --no-link \
+            --expr "
+              let
+                flake = builtins.getFlake (toString ./.);
+                pkgs = import flake.inputs.nixpkgs {
+                  system = \"x86_64-linux\";
+                  config.allowUnfree = true;
+                  overlays = [ flake.overlays.default ];
+                };
+                fa = pkgs.mkFlashAttn {
+                  cudaArchs = $(python3 -c 'import os; v=os.environ["CUDA_ARCHS"]; print("null" if not v.strip() else "[ " + " ".join("\"%s\"" % a for a in v.split(";") if a) + " ]")');
+                  maxJobs = $MAX_JOBS_REQ;
+                  nvccThreads = $NVCC_THREADS_REQ;
+                };
+              in pkgs.python3.withPackages (ps: [ fa ])
+            " -o pyenv
+          ./pyenv/bin/python tests/import-test.py 2>&1 | tee import-test.log
+
+      - name: Upload logs & artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs-arch-${{ env.ARCH_TAG || 'default' }}
+          path: |
+            build.log
+            import-test.log
+            path-info.txt
+          retention-days: 30

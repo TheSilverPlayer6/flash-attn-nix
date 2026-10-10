@@ -93,7 +93,7 @@ let
     owner = "NVIDIA";
     repo = "cutlass";
     rev = "dc4817921edda44a549197ff3a9dcf5df0636e7b";
-    hash = lib.fakeHash; # replaced with the real hash on first build
+    hash = "sha256-I//kXsZoOGD2ru/Iln2xHQ12EE2jz0zo2mA5YyWyjRg=";
   };
 in
 assert lib.assertMsg (torch.cudaSupport or false) ''
@@ -126,7 +126,7 @@ assert lib.assertMsg (torch.cudaSupport or false) ''
     owner = "Dao-AILab";
     repo = "flash-attention";
     tag = "v${version}";
-    hash = lib.fakeHash; # replaced with the real hash on first build
+    hash = "sha256-oZTZegr8hNOV5IrkzeU3CpWTSffqDgV+kGvwhpwBkHE=";
   };
 
   patches = [
